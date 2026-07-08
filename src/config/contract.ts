@@ -1,4 +1,4 @@
-import { getAddress, parseAbi, type Abi } from "viem";
+import { getAddress, parseAbi, parseEther, type Abi } from "viem";
 
 export const POLYGON_CHAIN_ID = 137;
 export const POLYGON_CHAIN_ID_HEX = "0x89";
@@ -8,15 +8,16 @@ export const CONTRACT_ADDRESS = getAddress(
   "0xf90169AD413429af4AE0a3B8962648d4a3289011",
 );
 export const DEPLOYMENT_BLOCK = 76819613n;
+export const EXPECTED_TICKET_PRICE = parseEther("30");
 
-export type PurchaseFunctionName = "buyTicket" | "enterRaffle";
+export type PurchaseFunctionName = "buyTicket";
 export type PriceFunctionName = "ticketPrice" | "TICKET_PRICE";
 
-export const PURCHASE_FUNCTIONS = ["buyTicket", "enterRaffle"] as const;
+export const PURCHASE_FUNCTIONS = ["buyTicket"] as const;
 export const CANONICAL_PRICE_METHOD: PriceFunctionName = "ticketPrice";
 
 export const configuredPurchaseFunction = (
-  process.env.NEXT_PUBLIC_PURCHASE_FUNCTION || "buyTicket"
+  "buyTicket"
 ) as PurchaseFunctionName;
 
 export const CONTRACT_ABI = parseAbi([
@@ -31,9 +32,10 @@ export const CONTRACT_ABI = parseAbi([
   "function maxTicketsPerAddress() view returns (uint256)",
   "function emergencyActive() view returns (bool)",
   "function buyTicket() payable",
-  "function enterRaffle() payable",
-  "event TicketBought(address indexed buyer, uint256 indexed round, uint256 price)",
-  "event WinnerPicked(address indexed winner, uint256 indexed round, uint256 prize)",
+  "event TicketBought(address indexed buyer, uint256 indexed round)",
+  "event WinnerPicked(address indexed winner, uint256 prize, uint256 indexed round)",
+  "event WinnerRequested(uint256 indexed requestId, uint256 indexed round)",
+  "event RoundReset(uint256 indexed newRound)",
 ]) satisfies Abi;
 
 export const HISTORY_SCAN_CONFIG = {

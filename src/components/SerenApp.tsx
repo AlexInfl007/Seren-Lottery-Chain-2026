@@ -6,10 +6,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Copy,
   ExternalLink,
-  Gift,
   Lock,
   Menu,
-  Minus,
+  RefreshCcw,
   Send,
   Shield,
   Sparkles,
@@ -18,143 +17,90 @@ import {
   Users,
   Wallet,
   X,
-  Zap,
 } from "lucide-react";
-import { formatEther, parseEther } from "viem";
-import { CONTRACT_ADDRESS, CONTRACT_LINK, POLYGON_EXPLORER } from "@/config/contract";
+import type { Hash } from "viem";
+import {
+  CONTRACT_ADDRESS,
+  CONTRACT_LINK,
+  EXPECTED_TICKET_PRICE,
+  POLYGON_EXPLORER,
+} from "@/config/contract";
+import { useLanguage } from "@/hooks/useLanguage";
 import { useWallet } from "@/hooks/useWallet";
-import { createWalletPublicClient, readLotteryState, type LotteryState } from "@/lib/contractReads";
+import { createWalletPublicClient, readLotteryState, simulateTicketPurchase, type LotteryState } from "@/lib/contractReads";
 import { loadContractHistory, type ActivityEntry, type WinnerEntry } from "@/lib/contractHistory";
 import { canLoadContractData } from "@/lib/dataGate";
 import { normalizeContractError, type AppError } from "@/lib/contractErrors";
 import { executeTicketPurchase } from "@/lib/purchaseFlow";
 import { getSessionPrediction } from "@/lib/prediction";
+import { formatCount, formatPol, formatTimestamp, shortenAddress, shortenHash } from "@/lib/format";
+import { languageLabels, languages, type Language } from "@/i18n/translations";
 
 type TxState =
   | { status: "idle" }
   | { status: "simulating" }
   | { status: "awaitingWallet" }
-  | { status: "pending"; hash?: `0x${string}` }
-  | { status: "success"; hash?: `0x${string}` }
-  | { status: "failed"; error: AppError; hash?: `0x${string}` };
+  | { status: "pending"; hash?: Hash }
+  | { status: "success"; hash?: Hash }
+  | { status: "failed"; error: AppError; hash?: Hash };
 
-const FIXED_TICKET_PRICE = parseEther("30");
-const MAX_TICKETS = 10;
-
-const navLinks = [
-  ["Home", "#home"],
-  ["Buy Tickets", "#buy"],
-  ["My Tickets", "#buy"],
-  ["History", "#history"],
-  ["How It Works", "#how"],
-  ["FAQ", "#faq"],
-] as const;
-
-const demoPurchases = [
-  ["0x8a7f...d3e2", "25", "750 POL", "2m ago"],
-  ["0x3c1b...a9f7", "10", "300 POL", "5m ago"],
-  ["0x9d4e...b1c8", "5", "150 POL", "7m ago"],
-  ["0x6f2a...e7d4", "12", "360 POL", "11m ago"],
-  ["0x7b3c...f8a9", "3", "90 POL", "15m ago"],
-  ["0x1e9d...c2b7", "8", "240 POL", "18m ago"],
-  ["0x4a6f...d9e1", "6", "180 POL", "23m ago"],
-] as const;
-
-const demoWinners = [
-  ["46", "0x7e48...a2f1", "8,765.32 POL", "Jul 5, 2025"],
-  ["45", "0x1c9d...b7a3", "7,654.11 POL", "Jun 28, 2025"],
-  ["44", "0x2f6a...d4c8", "6,543.21 POL", "Jun 21, 2025"],
-  ["43", "0x9b3e...f1a7", "5,432.10 POL", "Jun 14, 2025"],
-  ["42", "0x8d1f...c3b6", "4,321.77 POL", "Jun 7, 2025"],
-] as const;
+type SimulationState =
+  | { status: "idle" }
+  | { status: "checking" }
+  | { status: "ready" }
+  | { status: "failed"; error: AppError }
+  | { status: "insufficientFunds" };
 
 function Brand({ footer = false }: { footer?: boolean }) {
   return (
-    <Link href="#home" className={`brand-logo ${footer ? "footer-brand" : ""}`} aria-label="Seren Lottery home">
+    <Link href="#home" className={`brand-logo ${footer ? "footer-brand" : ""}`} aria-label="Seren Lottery Chain">
+      <Image src="/assets/logo.png" alt="" width={footer ? 34 : 30} height={footer ? 34 : 30} />
       <span>Seren</span>
-      <span>
-        L
-        <Image src="/assets/logo.png" alt="" width={footer ? 27 : 22} height={footer ? 27 : 22} />
-        ttery
-      </span>
+      <span>Lottery Chain</span>
     </Link>
   );
-}
-
-function formatPol(value?: bigint, fallback = "12,345.67 POL") {
-  if (value === undefined) return fallback;
-  return `${Number(formatEther(value)).toLocaleString("en-US", {
-    maximumFractionDigits: 2,
-  })} POL`;
-}
-
-function formatCount(value?: bigint, fallback = "24,578") {
-  if (value === undefined) return fallback;
-  return Number(value).toLocaleString("en-US");
-}
-
-function shortAddress(value: string) {
-  return `${value.slice(0, 6)}...${value.slice(-4)}`;
-}
-
-function formatWhen(timestamp?: number) {
-  if (!timestamp) return "just now";
-  const diff = Math.max(1, Math.round((Date.now() - timestamp) / 60000));
-  if (diff < 60) return `${diff}m ago`;
-  if (diff < 1440) return `${Math.round(diff / 60)}h ago`;
-  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(new Date(timestamp));
-}
-
-function walletErrorText(error?: AppError) {
-  if (!error) return "";
-  const copy: Record<AppError["key"], string> = {
-    walletUnavailable: "No wallet provider is available in this browser.",
-    userRejected: "The wallet request was rejected.",
-    wrongNetwork: "Switch to Polygon Mainnet to continue.",
-    noAccounts: "No wallet accounts were returned.",
-    providerFailure: "The wallet provider could not complete the request.",
-    configInvalid: "Ticket purchase is temporarily unavailable.",
-    readFailed: "Contract data could not be read.",
-    simulationFailed: "The transaction check failed.",
-    purchaseClosed: "Entries are unavailable while this draw is closed.",
-    emergencyActive: "Entry is temporarily unavailable.",
-    insufficientFunds: "Your wallet needs enough POL for tickets and gas.",
-    transactionRejected: "The transaction was rejected in the wallet.",
-    transactionFailed: "The transaction did not complete successfully.",
-    historyUnavailable: "History is unavailable through this wallet provider.",
-  };
-  return copy[error.key];
 }
 
 function Stat({
   label,
   value,
   helper,
+  locked,
   accent,
 }: {
   label: string;
   value: string;
-  helper: string;
+  helper?: string;
+  locked?: boolean;
   accent?: boolean;
 }) {
   return (
-    <div className="draw-stat">
+    <div className={`draw-stat ${locked ? "is-locked" : ""}`}>
       <span>{label}</span>
-      <strong className={accent ? "stat-accent" : ""}>{value}</strong>
-      <small>{helper}</small>
+      <strong className={accent ? "stat-accent" : ""}>{locked ? "—" : value}</strong>
+      {helper && <small>{helper}</small>}
     </div>
   );
 }
 
+function walletConnectConfigured() {
+  return Boolean(process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID);
+}
+
 export default function SerenApp() {
   const wallet = useWallet();
+  const { language, setLanguage, t } = useLanguage();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [walletOpen, setWalletOpen] = useState(false);
   const [lotteryState, setLotteryState] = useState<LotteryState>();
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [winners, setWinners] = useState<WinnerEntry[]>([]);
-  const [quantity, setQuantity] = useState(1);
+  const [historyError, setHistoryError] = useState(false);
+  const [readError, setReadError] = useState<AppError>();
+  const [refreshing, setRefreshing] = useState(false);
+  const [simulation, setSimulation] = useState<SimulationState>({ status: "idle" });
   const [txState, setTxState] = useState<TxState>({ status: "idle" });
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [predictionOpen, setPredictionOpen] = useState(false);
   const [predictionText, setPredictionText] = useState("");
 
@@ -163,23 +109,70 @@ export default function SerenApp() {
     chainId: wallet.chainId,
   });
 
-  const totalPrice = useMemo(() => FIXED_TICKET_PRICE * BigInt(quantity), [quantity]);
+  const navLinks = useMemo(
+    () =>
+      [
+        [t.nav.home, "#home"],
+        [t.nav.buy, "#buy"],
+        [t.nav.activity, "#history"],
+        [t.nav.how, "#how"],
+        [t.nav.faq, "#faq"],
+      ] as const,
+    [t],
+  );
 
   const refreshData = useCallback(
     async (forceHistory = false) => {
       if (!dataAllowed || !wallet.provider || !wallet.account) return;
+      setRefreshing(true);
+      setReadError(undefined);
+      setHistoryError(false);
+      setSimulation({ status: "checking" });
+
       try {
         const state = await readLotteryState(wallet.provider, wallet.account);
         setLotteryState(state);
-        const history = await loadContractHistory(wallet.provider, forceHistory);
-        setActivity(history.activity);
-        setWinners(history.winners);
-      } catch {
+
+        const client = createWalletPublicClient(wallet.provider);
+        const balance = await client.getBalance({ address: wallet.account });
+        if (balance <= state.ticketPrice) {
+          setSimulation({ status: "insufficientFunds" });
+        } else if (!state.canPurchase) {
+          setSimulation({ status: "idle" });
+        } else {
+          try {
+            await simulateTicketPurchase({
+              client,
+              walletClient: wallet.walletClient!,
+              account: wallet.account,
+              value: state.ticketPrice,
+            });
+            setSimulation({ status: "ready" });
+          } catch (error) {
+            setSimulation({ status: "failed", error: normalizeContractError(error) });
+          }
+        }
+
+        try {
+          const history = await loadContractHistory(wallet.provider, forceHistory);
+          setActivity(history.activity);
+          setWinners(history.winners);
+        } catch {
+          setActivity([]);
+          setWinners([]);
+          setHistoryError(true);
+        }
+      } catch (error) {
+        setLotteryState(undefined);
         setActivity([]);
         setWinners([]);
+        setReadError({ key: "readFailed", technical: error instanceof Error ? error.message : "" });
+        setSimulation({ status: "idle" });
+      } finally {
+        setRefreshing(false);
       }
     },
-    [dataAllowed, wallet.account, wallet.provider],
+    [dataAllowed, wallet.account, wallet.provider, wallet.walletClient],
   );
 
   useEffect(() => {
@@ -189,69 +182,11 @@ export default function SerenApp() {
       setLotteryState(undefined);
       setActivity([]);
       setWinners([]);
+      setHistoryError(false);
+      setReadError(undefined);
+      setSimulation({ status: "idle" });
     }
   }, [dataAllowed, refreshData]);
-
-  const canBuy =
-    dataAllowed &&
-    Boolean(lotteryState?.canPurchase) &&
-    txState.status !== "simulating" &&
-    txState.status !== "awaitingWallet" &&
-    txState.status !== "pending";
-
-  const openWallet = () => setWalletOpen((open) => !open);
-
-  const buyTickets = async () => {
-    if (!wallet.provider || !wallet.walletClient || !wallet.account || !lotteryState) {
-      setWalletOpen(true);
-      return;
-    }
-
-    setTxState({ status: "simulating" });
-    try {
-      const client = createWalletPublicClient(wallet.provider);
-      let lastHash: `0x${string}` | undefined;
-
-      for (let index = 0; index < quantity; index += 1) {
-        const result = await executeTicketPurchase({
-          client,
-          walletClient: wallet.walletClient,
-          account: wallet.account,
-          value: FIXED_TICKET_PRICE,
-          onProgress: (progress, hash) => {
-            if (progress === "simulating") setTxState({ status: "simulating" });
-            if (progress === "awaitingWallet") setTxState({ status: "awaitingWallet" });
-            if (progress === "pending") setTxState({ status: "pending", hash });
-          },
-        });
-        lastHash = result.hash;
-        if (result.receipt.status !== "success") {
-          setTxState({ status: "failed", error: { key: "transactionFailed" }, hash: result.hash });
-          return;
-        }
-      }
-
-      setTxState({ status: "success", hash: lastHash });
-      await refreshData(true);
-    } catch (error) {
-      setTxState({ status: "failed", error: normalizeContractError(error) });
-    }
-  };
-
-  const revealPrediction = () => {
-    const predictions = {
-      "quiet-door": "A quiet decision may open an unexpected door.",
-      "patient-luck": "Patience can be its own kind of luck.",
-      "look-twice": "Look twice before choosing the obvious path.",
-      "new-connection": "A new connection may bring fresh momentum.",
-      "small-steps": "Small steps can lead to memorable outcomes.",
-      "trust-process": "Trust your process, not a promise.",
-      "curious-chapter": "The next chapter may start with curiosity.",
-      "careful-attention": "Today rewards careful attention.",
-    };
-    setPredictionText(predictions[getSessionPrediction()]);
-    setPredictionOpen(true);
-  };
 
   const txHash =
     txState.status === "pending" || txState.status === "success" || txState.status === "failed"
@@ -260,36 +195,99 @@ export default function SerenApp() {
 
   const txMessage =
     txState.status === "simulating"
-      ? "Checking transaction..."
+      ? t.purchase.simulating
       : txState.status === "awaitingWallet"
-        ? "Waiting for wallet confirmation..."
+        ? t.purchase.awaitingWallet
         : txState.status === "pending"
-          ? "Waiting for Polygon confirmation..."
+          ? t.purchase.pending
           : txState.status === "success"
-            ? "Ticket purchase confirmed."
+            ? t.purchase.success
             : txState.status === "failed"
-              ? walletErrorText(txState.error)
+              ? t.errors[txState.error.key]
               : "";
 
-  const purchaseRows =
-    activity.length > 0
-      ? activity.slice(0, 7).map((item) => [
-          shortAddress(item.buyer),
-          "1",
-          "30 POL",
-          formatWhen(item.timestamp),
-        ])
-      : demoPurchases;
+  const purchaseDisabled =
+    !dataAllowed ||
+    !lotteryState ||
+    !lotteryState.canPurchase ||
+    simulation.status !== "ready" ||
+    txState.status === "simulating" ||
+    txState.status === "awaitingWallet" ||
+    txState.status === "pending";
 
-  const winnerRows =
-    winners.length > 0
-      ? winners.slice(0, 5).map((item) => [
-          formatCount(item.round, "0"),
-          shortAddress(item.winner),
-          formatPol(item.prize, "Pending"),
-          formatWhen(item.timestamp),
-        ])
-      : demoWinners;
+  const purchaseReason = !wallet.account
+    ? t.purchase.connectFirst
+    : !wallet.isPolygon
+      ? t.purchase.wrongNetwork
+      : readError
+        ? t.errors[readError.key]
+        : !lotteryState
+          ? t.purchase.readFirst
+          : lotteryState.priceMismatch
+            ? t.purchase.priceMismatch
+            : lotteryState.purchaseUnavailableReason === "closed"
+              ? t.purchase.closed
+              : lotteryState.purchaseUnavailableReason === "emergency"
+                ? t.purchase.emergency
+                : lotteryState.purchaseUnavailableReason === "config_invalid"
+                  ? t.purchase.unavailableConfig
+                  : simulation.status === "insufficientFunds"
+                    ? t.purchase.insufficientFunds
+                    : simulation.status === "failed"
+                      ? t.errors[simulation.error.key]
+                      : simulation.status === "checking"
+                        ? t.purchase.simulating
+                        : simulation.status === "ready"
+                          ? t.purchase.ready
+                          : "";
+
+  const openWallet = () => setWalletOpen((open) => !open);
+
+  const revealPrediction = () => {
+    const id = getSessionPrediction();
+    setPredictionText(t.lucky.predictions[id]);
+    setPredictionOpen(true);
+  };
+
+  const buyTicket = async () => {
+    if (!wallet.provider || !wallet.walletClient || !wallet.account || !lotteryState) {
+      setWalletOpen(true);
+      return;
+    }
+
+    setConfirmOpen(false);
+    setTxState({ status: "simulating" });
+    try {
+      const client = createWalletPublicClient(wallet.provider);
+      const result = await executeTicketPurchase({
+        client,
+        walletClient: wallet.walletClient,
+        account: wallet.account,
+        value: lotteryState.ticketPrice,
+        onProgress: (progress, hash) => {
+          if (progress === "simulating") setTxState({ status: "simulating" });
+          if (progress === "awaitingWallet") setTxState({ status: "awaitingWallet" });
+          if (progress === "pending") setTxState({ status: "pending", hash });
+        },
+      });
+
+      if (result.receipt.status !== "success") {
+        setTxState({ status: "failed", error: { key: "transactionFailed" }, hash: result.hash });
+        return;
+      }
+
+      setTxState({ status: "success", hash: result.hash });
+      await refreshData(true);
+    } catch (error) {
+      setTxState({ status: "failed", error: normalizeContractError(error) });
+    }
+  };
+
+  const locked = !dataAllowed;
+  const ticketPrice = lotteryState?.ticketPrice;
+  const buyLabel = ticketPrice
+    ? t.purchase.buyWithPrice.replace("{price}", formatPol(ticketPrice))
+    : t.purchase.buy;
 
   return (
     <main id="home" className="seren-page">
@@ -298,24 +296,36 @@ export default function SerenApp() {
 
         <nav className="desktop-nav" aria-label="Primary navigation">
           {navLinks.map(([label, href], index) => (
-            <Link className={index === 0 ? "active" : ""} href={href} key={label}>
+            <Link className={index === 0 ? "active" : ""} href={href} key={href}>
               {label}
             </Link>
           ))}
           <button type="button" onClick={revealPrediction}>
-            Predictions
+            {t.hero.lucky}
           </button>
         </nav>
 
         <div className="header-actions">
+          <select
+            className="language-select"
+            value={language}
+            onChange={(event) => setLanguage(event.target.value as Language)}
+            aria-label="Language"
+          >
+            {languages.map((item) => (
+              <option value={item} key={item}>
+                {languageLabels[item]}
+              </option>
+            ))}
+          </select>
           <button type="button" className="outline-button wallet-button" onClick={openWallet}>
-            {wallet.account ? shortAddress(wallet.account) : wallet.connecting ? "Connecting..." : "Connect Wallet"}
+            {wallet.account ? shortenAddress(wallet.account) : wallet.connecting ? t.wallet.connecting : t.wallet.connect}
           </button>
           <button
             type="button"
             className="icon-button menu-button"
             onClick={() => setMobileOpen((open) => !open)}
-            aria-label={mobileOpen ? "Close menu" : "Open menu"}
+            aria-label={mobileOpen ? t.wallet.close : t.wallet.menu}
           >
             {mobileOpen ? <X /> : <Menu />}
           </button>
@@ -325,35 +335,38 @@ export default function SerenApp() {
           <div className="wallet-popover">
             {wallet.account ? (
               <>
-                <strong>Wallet connected</strong>
+                <strong>{t.wallet.connected}</strong>
                 <p>{wallet.account}</p>
                 <button type="button" onClick={wallet.copyAddress}>
-                  <Copy size={16} /> {wallet.copied ? "Address copied" : "Copy address"}
+                  <Copy size={16} /> {wallet.copied ? t.wallet.copied : t.wallet.copy}
                 </button>
                 {!wallet.isPolygon && (
                   <button type="button" onClick={wallet.switchToPolygon}>
-                    <Shield size={16} /> Switch to Polygon
+                    <Shield size={16} /> {t.wallet.switch}
                   </button>
                 )}
                 <button type="button" onClick={wallet.disconnect}>
-                  <X size={16} /> Disconnect
+                  <X size={16} /> {t.wallet.disconnect}
                 </button>
               </>
             ) : (
               <>
-                <strong>Choose a wallet</strong>
+                <strong>{t.wallet.selectProvider}</strong>
                 {wallet.providers.map((provider) => (
                   <button type="button" key={provider.id} onClick={() => wallet.connectWithProvider(provider)}>
-                    <Wallet size={16} /> {provider.name}
+                    <Wallet size={16} /> {provider.name || t.wallet.browserWallet}
                   </button>
                 ))}
-                <button type="button" onClick={wallet.connectWalletConnect}>
-                  <Wallet size={16} /> WalletConnect
-                </button>
-                {wallet.providers.length === 0 && <p>No browser wallet was found.</p>}
+                {walletConnectConfigured() && (
+                  <button type="button" onClick={wallet.connectWalletConnect}>
+                    <Wallet size={16} /> {t.wallet.walletConnect}
+                  </button>
+                )}
+                {!walletConnectConfigured() && <p>{t.wallet.walletConnectUnavailable}</p>}
+                {wallet.providers.length === 0 && <p>{t.wallet.unavailable}</p>}
               </>
             )}
-            {wallet.error && <p className="inline-error">{walletErrorText(wallet.error)}</p>}
+            {wallet.error && <p className="inline-error">{t.errors[wallet.error.key]}</p>}
           </div>
         )}
       </header>
@@ -361,115 +374,108 @@ export default function SerenApp() {
       {mobileOpen && (
         <nav className="mobile-nav" aria-label="Mobile navigation">
           {navLinks.map(([label, href]) => (
-            <Link href={href} key={label} onClick={() => setMobileOpen(false)}>
+            <Link href={href} key={href} onClick={() => setMobileOpen(false)}>
               {label}
             </Link>
           ))}
           <button type="button" onClick={revealPrediction}>
-            Predictions
+            {t.hero.lucky}
           </button>
         </nav>
       )}
 
-      <section className="hero-banner" aria-label="Seren Lottery">
-        <Image src="/assets/Banner.png" alt="Seren Lottery blockchain lottery on Polygon Network" fill priority sizes="100vw" />
+      <section className="hero-banner" aria-label="Seren Lottery Chain">
+        <Image src="/assets/Banner.png" alt="Seren Lottery Chain on Polygon" fill priority sizes="100vw" />
+        <div className="hero-copy">
+          <span>{t.hero.eyebrow}</span>
+          <h1>{t.hero.heading}</h1>
+          <p>{t.hero.body}</p>
+          <div>
+            <button type="button" className="primary-button" onClick={openWallet}>
+              <Wallet size={18} /> {wallet.account ? shortenAddress(wallet.account) : t.wallet.connect}
+            </button>
+            <Link className="outline-button" href={CONTRACT_LINK} target="_blank">
+              {t.hero.contract} <ExternalLink size={15} />
+            </Link>
+          </div>
+        </div>
       </section>
 
       <section id="buy" className="content-grid">
         <article className="panel current-draw">
           <div className="panel-title">
-            <span className="status-dot" />
-            <h2>Current Draw</h2>
+            <span className={`status-dot ${dataAllowed ? "is-live" : ""}`} />
+            <div>
+              <h2>{t.dashboard.title}</h2>
+              <p>{dataAllowed ? t.dashboard.subtitleConnected : t.dashboard.subtitleLocked}</p>
+            </div>
+            {dataAllowed && (
+              <button type="button" className="icon-button refresh-button" onClick={() => refreshData(true)} disabled={refreshing} aria-label={t.dashboard.refresh}>
+                <RefreshCcw />
+              </button>
+            )}
           </div>
 
           <div className="draw-stats">
-            <Stat label="Round" value={formatCount(lotteryState?.round, "47")} helper="" accent />
-            <Stat label="Prize Pool" value={formatPol(lotteryState?.prizePool)} helper="~ $5,678.90" />
-            <Stat label="Total Tickets" value={formatCount(lotteryState?.ticketsCount)} helper="sold" />
-            <Stat label="Ticket Price" value="30 POL" helper="per ticket" />
+            <Stat label={t.dashboard.currentRound} value={formatCount(lotteryState?.round)} locked={locked} accent />
+            <Stat label={t.dashboard.prizePool} value={formatPol(lotteryState?.prizePool)} locked={locked} />
+            <Stat label={t.dashboard.ticketsInDraw} value={formatCount(lotteryState?.ticketsCount)} locked={locked} />
+            <Stat label={t.dashboard.yourTickets} value={formatCount(lotteryState?.userTickets)} locked={locked} />
+            <Stat label={t.dashboard.ticketPrice} value={formatPol(lotteryState?.ticketPrice)} locked={locked} />
+            <Stat label={t.dashboard.drawStatus} value={lotteryState?.open ? t.dashboard.open : t.dashboard.closed} locked={locked} />
+            <Stat label={t.dashboard.emergency} value={lotteryState?.emergencyActive ? t.dashboard.emergency : t.dashboard.normal} locked={locked} />
+            {lotteryState?.maxTicketsPerRound && <Stat label={t.dashboard.maxPerRound} value={formatCount(lotteryState.maxTicketsPerRound)} />}
+            {lotteryState?.maxTicketsPerAddress && <Stat label={t.dashboard.maxPerAddress} value={formatCount(lotteryState.maxTicketsPerAddress)} />}
           </div>
 
-          <div className="draw-progress">
-            <div>
-              <span>Until Next Draw</span>
-              <strong>2D 14H 32M 18S</strong>
+          {locked && (
+            <div className="locked-state">
+              <Lock size={18} />
+              <span>{wallet.account && !wallet.isPolygon ? t.wallet.wrongNetwork : t.dashboard.subtitleLocked}</span>
             </div>
-            <div className="progress-track">
-              <span />
-            </div>
-            <div>
-              <span>0 Tickets</span>
-              <span>50,000 Tickets</span>
-            </div>
-          </div>
-
-          <div className="guarantee">
-            <span className="round-icon">
-              <Trophy />
-            </span>
-            <div>
-              <strong>Min 1 winner guaranteed</strong>
-              <p>If no one matches all numbers, the prize pool rolls over to the next round.</p>
-            </div>
-            <Link href="#how" className="outline-button">
-              How It Works
-            </Link>
-          </div>
+          )}
+          {readError && <p className="inline-error">{t.errors[readError.key]}</p>}
+          {lotteryState?.unexpectedTicketPrice && (
+            <p className="inline-warning">
+              {formatPol(lotteryState.ticketPrice)} is the contract ticket price. Expected configuration is {formatPol(EXPECTED_TICKET_PRICE)}.
+            </p>
+          )}
         </article>
 
         <aside className="panel wallet-card">
           <div className="panel-title">
-            <Wallet size={18} />
-            <h2>Your Wallet</h2>
-            <span className="green-dot" />
-          </div>
-
-          <button type="button" className="outline-button wide" onClick={openWallet}>
-            {wallet.account ? shortAddress(wallet.account) : "Connect Wallet"}
-          </button>
-
-          <div className="wallet-copy">
-            <strong>Buy tickets at 30 POL each</strong>
-            <p>Each purchase sends 30 POL per ticket directly to the lottery contract.</p>
-          </div>
-
-          <button type="button" className="primary-button wide" onClick={revealPrediction}>
-            Predictions
-          </button>
-
-          <div className="separator">
-            <span />
-            <small>OR</small>
-            <span />
-          </div>
-
-          <div className="buy-control">
-            <span>Buy Tickets</span>
-            <div className="stepper" aria-label="Ticket quantity">
-              <button type="button" onClick={() => setQuantity((value) => Math.max(1, value - 1))}>
-                <Minus />
-              </button>
-              <strong>{quantity}</strong>
-              <button type="button" onClick={() => setQuantity((value) => Math.min(MAX_TICKETS, value + 1))}>
-                <span>+</span>
-              </button>
+            <Ticket size={18} />
+            <div>
+              <h2>{t.purchase.title}</h2>
+              <p>{t.purchase.oneTicket}</p>
             </div>
           </div>
 
-          <button type="button" className="buy-button wide" disabled={!canBuy} onClick={buyTickets}>
-            Buy {quantity} Ticket{quantity > 1 ? "s" : ""} ({formatPol(totalPrice, "30 POL")})
+          <button type="button" className="outline-button wide" onClick={openWallet}>
+            {wallet.account ? shortenAddress(wallet.account) : t.wallet.connect}
           </button>
 
-          <p className="my-tickets">My Tickets: {formatCount(lotteryState?.userTickets, "-")}</p>
-          {!wallet.account && <p className="inline-error">Connect your wallet to buy tickets.</p>}
-          {wallet.account && !wallet.isPolygon && <p className="inline-error">Switch to Polygon Mainnet to buy tickets.</p>}
-          {wallet.account && wallet.isPolygon && lotteryState && !lotteryState.canPurchase && (
-            <p className="inline-error">This draw is not accepting ticket purchases right now.</p>
+          {wallet.account && !wallet.isPolygon && (
+            <button type="button" className="primary-button wide" onClick={wallet.switchToPolygon}>
+              <Shield size={16} /> {t.wallet.switch}
+            </button>
           )}
+
+          <div className="wallet-copy">
+            <strong>{ticketPrice ? formatPol(ticketPrice) : "—"}</strong>
+            <p>{t.purchase.gas}</p>
+          </div>
+
+          <button type="button" className="buy-button wide" disabled={purchaseDisabled} onClick={() => setConfirmOpen(true)}>
+            {buyLabel}
+          </button>
+
+          <p className="my-tickets">{t.purchase.userTickets}: {formatCount(lotteryState?.userTickets)}</p>
+          {purchaseReason && <p className={simulation.status === "ready" ? "tx-message" : "inline-error"}>{purchaseReason}</p>}
           {txMessage && <p className={txState.status === "failed" ? "inline-error" : "tx-message"}>{txMessage}</p>}
           {txHash && (
             <Link className="tx-link" href={`${POLYGON_EXPLORER}/tx/${txHash}`} target="_blank">
-              View transaction <ExternalLink size={14} />
+              {t.purchase.viewTx}: {shortenHash(txHash)} <ExternalLink size={14} />
             </Link>
           )}
         </aside>
@@ -480,27 +486,30 @@ export default function SerenApp() {
           <div className="table-title">
             <div>
               <Users size={18} />
-              <h2>Recent Purchases</h2>
+              <h2>{t.activity.title}</h2>
             </div>
-            <Link href={CONTRACT_LINK} target="_blank">
-              View All
-            </Link>
+            <Link href={CONTRACT_LINK} target="_blank">{t.misc.explorer}</Link>
           </div>
+          <p className="table-subtitle">{t.activity.subtitle}</p>
           <div className="purchase-list">
             <div className="table-head">
-              <span>Address</span>
-              <span>Tickets</span>
-              <span>Amount</span>
-              <span>Time</span>
+              <span>{t.activity.buyer}</span>
+              <span>{t.activity.round}</span>
+              <span>{t.activity.price}</span>
+              <span>{t.activity.time}</span>
+              <span>{t.activity.tx}</span>
             </div>
-            {purchaseRows.map(([address, tickets, amount, time]) => (
-              <div className="purchase-row" key={`${address}-${time}`}>
-                <span className="avatar">SR</span>
-                <span>{address}</span>
-                <span>{tickets}</span>
-                <span>{amount}</span>
-                <span>{time}</span>
-              </div>
+            {!dataAllowed && <p className="empty-state">{t.activity.locked}</p>}
+            {dataAllowed && historyError && <p className="empty-state">{t.activity.unavailable}</p>}
+            {dataAllowed && !historyError && activity.length === 0 && <p className="empty-state">{t.activity.empty}</p>}
+            {dataAllowed && !historyError && activity.map((item) => (
+              <Link className="purchase-row" key={item.id} href={item.explorerUrl} target="_blank">
+                <span>{shortenAddress(item.buyer)}</span>
+                <span>{formatCount(item.round)}</span>
+                <span>{formatPol(ticketPrice)}</span>
+                <span>{formatTimestamp(item.timestamp)}</span>
+                <span>{shortenHash(item.transactionHash)}</span>
+              </Link>
             ))}
           </div>
         </article>
@@ -509,122 +518,115 @@ export default function SerenApp() {
           <div className="table-title">
             <div>
               <Trophy size={18} />
-              <h2>Past Winners</h2>
+              <h2>{t.winners.title}</h2>
             </div>
-            <Link href={CONTRACT_LINK} target="_blank">
-              View All
-            </Link>
+            <Link href={CONTRACT_LINK} target="_blank">{t.misc.explorer}</Link>
           </div>
+          <p className="table-subtitle">{t.winners.subtitle}</p>
           <div className="winner-list">
             <div className="table-head">
-              <span>Round</span>
-              <span>Winner</span>
-              <span>Prize</span>
-              <span>Date</span>
+              <span>{t.winners.round}</span>
+              <span>{t.winners.winner}</span>
+              <span>{t.winners.prize}</span>
+              <span>{t.winners.time}</span>
+              <span>{t.winners.tx}</span>
             </div>
-            {winnerRows.map(([round, winner, prize, date]) => (
-              <div className="winner-row" key={`${round}-${winner}`}>
-                <span>{round}</span>
-                <span>{winner}</span>
-                <span>{prize}</span>
-                <span>{date}</span>
-              </div>
+            {!dataAllowed && <p className="empty-state">{t.winners.locked}</p>}
+            {dataAllowed && historyError && <p className="empty-state">{t.winners.unavailable}</p>}
+            {dataAllowed && !historyError && winners.length === 0 && <p className="empty-state">{t.winners.empty}</p>}
+            {dataAllowed && !historyError && winners.map((item) => (
+              <Link className="winner-row" key={item.id} href={item.explorerUrl} target="_blank">
+                <span>{formatCount(item.round)}</span>
+                <span>{shortenAddress(item.winner)}</span>
+                <span>{formatPol(item.prize)}</span>
+                <span>{formatTimestamp(item.timestamp)}</span>
+                <span>{shortenHash(item.transactionHash)}</span>
+              </Link>
             ))}
           </div>
-          <Link className="outline-button centered" href={CONTRACT_LINK} target="_blank">
-            View All Winners
-          </Link>
         </article>
       </section>
 
       <section id="how" className="benefits panel">
         <div>
-          <span className="large-icon">
-            <Shield />
-          </span>
-          <strong>Fair & Transparent</strong>
-          <p>Our smart contract is transparent and verifiable on-chain.</p>
+          <span className="large-icon"><Shield /></span>
+          <strong>{t.sections.howTitle}</strong>
+          {t.sections.howSteps.map((step) => <p key={step}>{step}</p>)}
         </div>
         <div>
-          <span className="large-icon">
-            <Lock />
-          </span>
-          <strong>Secure</strong>
-          <p>Built on Polygon network for low fees and high security.</p>
-        </div>
-        <div>
-          <span className="large-icon">
-            <Zap />
-          </span>
-          <strong>Instant</strong>
-          <p>Instant ticket delivery and prize distribution.</p>
-        </div>
-        <div>
-          <span className="large-icon">
-            <Gift />
-          </span>
-          <strong>Big Prizes</strong>
-          <p>The more tickets sold, the bigger the prize pool.</p>
+          <span className="large-icon"><Lock /></span>
+          <strong>{t.sections.transparencyTitle}</strong>
+          {t.sections.transparencyItems.map((item) => <p key={item}>{item}</p>)}
         </div>
       </section>
 
+      <section className="risk-strip panel">
+        <strong>{t.sections.riskTitle}</strong>
+        <p>{t.sections.risk}</p>
+      </section>
+
       <section id="faq" className="faq-strip">
-        <details>
-          <summary>How much is one ticket?</summary>
-          <p>Each lottery ticket costs exactly 30 POL. The interface only supports direct ticket purchases.</p>
-        </details>
-        <details>
-          <summary>What does Predictions do?</summary>
-          <p>Predictions reveals a symbolic entertainment message. It does not predict lottery results.</p>
-        </details>
+        {t.sections.faq.map(([question, answer]) => (
+          <details key={question}>
+            <summary>{question}</summary>
+            <p>{answer}</p>
+          </details>
+        ))}
       </section>
 
       <footer className="site-footer">
         <div>
           <Brand footer />
-          <p>Blockchain Lottery<br />on Polygon Network</p>
-          <div className="socials">
-            <span>t</span>
-            <Send size={16} />
-            <span>d</span>
-            <span>ig</span>
+          <p>{t.footer.tagline}</p>
+        </div>
+        <div>
+          <h3>{t.footer.links}</h3>
+          <Link href="#buy">{t.nav.buy}</Link>
+          <Link href="#history">{t.nav.activity}</Link>
+          <Link href="#how">{t.nav.how}</Link>
+          <Link href="#faq">{t.nav.faq}</Link>
+        </div>
+        <div>
+          <h3>{t.footer.information}</h3>
+          <Link href={CONTRACT_LINK} target="_blank">{t.footer.contract}</Link>
+          <Link href={CONTRACT_LINK} target="_blank">{t.footer.polygon}</Link>
+          <Link href={`${POLYGON_EXPLORER}/address/${CONTRACT_ADDRESS}`} target="_blank">{shortenAddress(CONTRACT_ADDRESS)}</Link>
+        </div>
+        <small>{t.footer.rights}</small>
+      </footer>
+
+      {confirmOpen && lotteryState && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+          <div className="modal">
+            <button type="button" className="icon-button modal-close" onClick={() => setConfirmOpen(false)} aria-label={t.purchase.cancel}>
+              <X />
+            </button>
+            <Ticket size={32} />
+            <h2 id="confirm-title">{t.purchase.confirmTitle}</h2>
+            <p>{t.purchase.confirmBody}</p>
+            <dl className="confirm-list">
+              <div><dt>{t.purchase.price}</dt><dd>{formatPol(lotteryState.ticketPrice)}</dd></div>
+              <div><dt>{t.purchase.contract}</dt><dd>{shortenAddress(CONTRACT_ADDRESS)}</dd></div>
+            </dl>
+            <p className="inline-warning">{t.purchase.risk} {t.purchase.gas}</p>
+            <div className="modal-actions">
+              <button type="button" className="outline-button" onClick={() => setConfirmOpen(false)}>{t.purchase.cancel}</button>
+              <button type="button" className="primary-button" onClick={buyTicket}>{t.purchase.continue}</button>
+            </div>
           </div>
         </div>
-        <div>
-          <h3>Quick Links</h3>
-          <Link href="#buy">Buy Tickets</Link>
-          <Link href="#buy">My Tickets</Link>
-          <Link href="#history">History</Link>
-          <Link href="#how">How It Works</Link>
-          <Link href="#faq">FAQ</Link>
-        </div>
-        <div>
-          <h3>Information</h3>
-          <Link href={CONTRACT_LINK} target="_blank">About Us</Link>
-          <Link href={CONTRACT_LINK} target="_blank">Terms of Service</Link>
-          <Link href={CONTRACT_LINK} target="_blank">Privacy Policy</Link>
-          <Link href={CONTRACT_LINK} target="_blank">Smart Contract</Link>
-        </div>
-        <div>
-          <h3>Contact</h3>
-          <a href="mailto:support@serenlottery.com">support@serenlottery.com</a>
-          <Link className="outline-button community" href={CONTRACT_LINK} target="_blank">
-            Join Our Community
-          </Link>
-        </div>
-        <small>© 2026 Seren Lottery. All rights reserved.</small>
-      </footer>
+      )}
 
       {predictionOpen && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="prediction-title">
           <div className="modal">
-            <button type="button" className="icon-button modal-close" onClick={() => setPredictionOpen(false)} aria-label="Close">
+            <button type="button" className="icon-button modal-close" onClick={() => setPredictionOpen(false)} aria-label={t.lucky.close}>
               <X />
             </button>
             <Sparkles size={32} />
-            <h2 id="prediction-title">Predictions</h2>
+            <h2 id="prediction-title">{t.lucky.title}</h2>
             <p>{predictionText}</p>
-            <small>For entertainment only. Not a prediction of lottery results.</small>
+            <small>{t.lucky.label}</small>
           </div>
         </div>
       )}
