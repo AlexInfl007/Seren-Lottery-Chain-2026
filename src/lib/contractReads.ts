@@ -10,6 +10,7 @@ import {
   CANONICAL_PRICE_METHOD,
   CONTRACT_ABI,
   CONTRACT_ADDRESS,
+  EXPECTED_TICKET_PRICE,
 } from "@/config/contract";
 import type { Eip1193Provider } from "@/lib/eip1193";
 import { validatePurchaseMethod } from "@/lib/contractAdapter";
@@ -22,6 +23,7 @@ export type LotteryState = {
   ticketPrice: bigint;
   ticketPriceSource: "ticketPrice" | "TICKET_PRICE";
   priceMismatch: boolean;
+  unexpectedTicketPrice: boolean;
   open: boolean;
   emergencyActive: boolean;
   maxTicketsPerRound?: bigint;
@@ -105,6 +107,7 @@ export async function readLotteryState(
   }
 
   const purchaseValidation = validatePurchaseMethod();
+  const unexpectedTicketPrice = ticketPrice !== EXPECTED_TICKET_PRICE;
   const isEmergency = Boolean(emergencyActive);
   const isOpen = Boolean(open);
   const canPurchase = purchaseValidation.ok && isOpen && !isEmergency && !priceMismatch;
@@ -126,6 +129,7 @@ export async function readLotteryState(
     ticketPrice,
     ticketPriceSource: hasTicketPrice ? "ticketPrice" : "TICKET_PRICE",
     priceMismatch,
+    unexpectedTicketPrice,
     open: isOpen,
     emergencyActive: isEmergency,
     maxTicketsPerRound: maxTicketsPerRound && maxTicketsPerRound > 0n ? maxTicketsPerRound : undefined,

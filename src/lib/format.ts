@@ -10,7 +10,7 @@ export function formatPol(value?: bigint | null): string {
 
 export function formatCount(value?: bigint | null): string {
   if (value === undefined || value === null) return "—";
-  return new Intl.NumberFormat("en-US").format(Number(value));
+  return new Intl.NumberFormat("en-US").format(value);
 }
 
 export function shortenAddress(value?: string, size = 4): string {
@@ -21,4 +21,15 @@ export function shortenAddress(value?: string, size = 4): string {
 export function shortenHash(value?: string, size = 6): string {
   if (!value) return "—";
   return `${value.slice(0, size + 2)}…${value.slice(-size)}`;
+}
+
+export function formatTimestamp(timestamp?: number): string {
+  if (!timestamp) return "—";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
 }

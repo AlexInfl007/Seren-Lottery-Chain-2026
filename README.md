@@ -27,11 +27,8 @@ npm run build
 ## Environment Variables
 
 ```bash
-NEXT_PUBLIC_PURCHASE_FUNCTION=buyTicket
 NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=
 ```
-
-`NEXT_PUBLIC_PURCHASE_FUNCTION` controls the single payable function used for ticket purchases. Supported values are `buyTicket` and `enterRaffle`. The app never switches between them automatically.
 
 `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` is optional. If it is omitted, injected browser wallets still work and WalletConnect is not enabled.
 
@@ -45,7 +42,7 @@ It defines:
 - contract address `0xf90169AD413429af4AE0a3B8962648d4a3289011`;
 - deployment block `76819613`;
 - the minimal ABI used by the app;
-- the configured purchase function;
+- the verified public purchase function `buyTicket()`;
 - ticket and winner event definitions;
 - adaptive history scanning settings.
 
@@ -53,9 +50,9 @@ Live lottery reads are performed only after the user explicitly connects a walle
 
 ## Purchase Method Verification
 
-Before purchases are enabled, the app validates that the configured purchase function exists in the adapter ABI, is payable, and takes no arguments. It then reads the live ticket price and simulates the exact payable call with that value. The wallet transaction is only submitted after successful simulation.
+Before purchases are enabled, the app validates that `buyTicket()` exists in the adapter ABI, is payable, and takes no arguments. It then reads the live ticket price and simulates the exact payable call with that value. The wallet transaction is only submitted after successful simulation.
 
-Important: production purchase functionality must remain disabled until the ABI/method discrepancy is reconciled. PolygonScan displays `buyTicket()`, while a known participation transaction used selector `0x2cfcc539`, commonly decoded as `enterRaffle()`. Do not rely on selector databases alone, do not send a plain POL transfer, and do not add automatic fallback between purchase methods.
+The app does not call `enterRaffle()`, fallback handlers, `receive()`, or plain native-token transfers for ticket purchases.
 
 ## History
 

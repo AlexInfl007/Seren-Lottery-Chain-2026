@@ -10,6 +10,12 @@ export function useLanguage() {
     setLanguageState(detectInitialLanguage());
   }, []);
 
+  useEffect(() => {
+    const translation = translations[language];
+    document.documentElement.lang = language;
+    document.documentElement.dir = translation.dir;
+  }, [language]);
+
   const setLanguage = (next: Language) => {
     setLanguageState(next);
     window.localStorage.setItem("seren.lang", next);

@@ -7,6 +7,8 @@ out/
 
 # local cache
 .npm-cache/
+.cache/
+.vercel/
 
 # production
 dist/
