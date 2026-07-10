@@ -22,7 +22,6 @@ import type { Hash } from "viem";
 import {
   CONTRACT_ADDRESS,
   CONTRACT_LINK,
-  EXPECTED_TICKET_PRICE,
   POLYGON_EXPLORER,
 } from "@/config/contract";
 import { useLanguage } from "@/hooks/useLanguage";
@@ -435,11 +434,6 @@ export default function SerenApp() {
             </div>
           )}
           {readError && <p className="inline-error">{t.errors[readError.key]}</p>}
-          {lotteryState?.unexpectedTicketPrice && (
-            <p className="inline-warning">
-              {formatPol(lotteryState.ticketPrice)} is the contract ticket price. Expected configuration is {formatPol(EXPECTED_TICKET_PRICE)}.
-            </p>
-          )}
         </article>
 
         <aside className="panel wallet-card">
@@ -462,7 +456,7 @@ export default function SerenApp() {
           )}
 
           <div className="wallet-copy">
-            <strong>{ticketPrice ? formatPol(ticketPrice) : "—"}</strong>
+            <strong>{ticketPrice ? formatPol(ticketPrice) : t.misc.unavailableDash}</strong>
             <p>{t.purchase.gas}</p>
           </div>
 
@@ -506,7 +500,7 @@ export default function SerenApp() {
               <Link className="purchase-row" key={item.id} href={item.explorerUrl} target="_blank">
                 <span>{shortenAddress(item.buyer)}</span>
                 <span>{formatCount(item.round)}</span>
-                <span>{formatPol(ticketPrice)}</span>
+                <span>{item.price === undefined ? t.misc.unavailableDash : formatPol(item.price)}</span>
                 <span>{formatTimestamp(item.timestamp)}</span>
                 <span>{shortenHash(item.transactionHash)}</span>
               </Link>
